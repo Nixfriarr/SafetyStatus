@@ -76,6 +76,70 @@ namespace SafetyStatus
                     __instance.m_statusEffect = SafeEffectName;
                     __instance.m_statusEffectHash = SafeEffectHash;
                 }
+                // Draw a sphere around PlayerBase EffectArea
+                DrawSphere(__instance.gameObject, Vector3.zero, Mathf.Max(0.5f, __instance.GetRadius()), Color.green, 0.1f, "Safe Area");
+            }
+
+            /// <summary>
+            /// Draws a sphere at the specified position with the given parameters.
+            /// </summary>
+            /// <param name="parent"></param>
+            /// <param name="position"></param>
+            /// <param name="radius"></param>
+            /// <param name="color"></param>
+            /// <param name="width"></param>
+            /// <param name="text"></param>
+            private static void DrawSphere(GameObject parent, Vector3 position, float radius, Color color, float width, string text = "")
+            {
+                // Draw circles along three axes (X, Y, Z) to form a sphere
+                DrawCircle(parent, position, radius, color, width, text, new Vector3(1, 0, 0)); // Circle on X-axis
+                DrawCircle(parent, position, radius, color, width, text, new Vector3(0, 1, 0)); // Circle on Y-axis
+                DrawCircle(parent, position, radius, color, width, text, new Vector3(0, 0, 1)); // Circle on Z-axis
+
+                if (!string.IsNullOrEmpty(text))
+                {
+                    // Add hoverable text to the parent object
+                    var hoverText = parent.AddComponent<HoverText>();
+                    hoverText.m_text = text;
+                }
+            }
+
+            /// <summary>
+            /// Draws a single circle around the specified axis.
+            /// </summary>
+            /// <param name="parent"></param>
+            /// <param name="position"></param>
+            /// <param name="radius"></param>
+            /// <param name="color"></param>
+            /// <param name="width"></param>
+            /// <param name="text"></param>
+            /// <param name="axis"></param>
+            private static void DrawCircle(GameObject parent, Vector3 position, float radius, Color color, float width, string text, Vector3 axis)
+            {
+                var obj = new GameObject("CircleRenderer");
+                obj.transform.position = parent.transform.position;
+                obj.transform.rotation = parent.transform.rotation;
+                obj.transform.parent = parent.transform;
+
+                var lineRenderer = obj.AddComponent<LineRenderer>();
+                lineRenderer.useWorldSpace = false;
+                lineRenderer.material = new Material(Shader.Find("Sprites/Default"));
+                lineRenderer.startColor = color;
+                lineRenderer.endColor = color;
+                lineRenderer.widthMultiplier = width;
+
+                // Calculate the number of segments for the circle
+                int segments = 100;
+                lineRenderer.positionCount = segments + 1;
+
+                // Generate points for the circle
+                for (int i = 0; i <= segments; i++)
+                {
+                    float angle = 2f * Mathf.PI * i / segments;
+                    Vector3 point = new Vector3(Mathf.Cos(angle) * radius, Mathf.Sin(angle) * radius, 0f);
+                    point = Quaternion.LookRotation(axis) * point; // Rotate circle to align with the axis
+                    lineRenderer.SetPosition(i, point + position);
+                }
             }
 
             /// <summary>
