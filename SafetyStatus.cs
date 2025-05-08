@@ -7,6 +7,7 @@ using Jotunn.Managers;
 using System.Reflection;
 using UnityEngine;
 using System.Linq;
+using System.Collections.Generic;
 
 
 namespace SafetyStatus
@@ -24,8 +25,14 @@ namespace SafetyStatus
         internal const string SafeEffectName = "SafeStatusEffect";
         internal static int SafeEffectHash;
 
+        internal static SafetyStatus Instance { get; private set; }
+        internal static Dictionary<EffectArea, List<GameObject>> Visuals = new();
+        internal static bool VisualsOn = false;
+
         public void Awake()
         {
+            Instance = this;
+            
             Log.Init(Logger);
 
             Harmony.CreateAndPatchAll(Assembly.GetExecutingAssembly(), harmonyInstanceId: PluginGUID);
@@ -33,6 +40,28 @@ namespace SafetyStatus
             Game.isModded = true;
 
             PrefabManager.OnVanillaPrefabsAvailable += AddCustomStatusEffect;
+        }
+
+        public void Update()
+        {
+            if (Input.GetKeyDown(KeyCode.F7))
+            {
+                VisualsOn = !VisualsOn;
+
+                foreach (var ea in Visuals.Keys)
+                {
+                    if (Visuals[ea].Count == 0)
+                    {
+                        VisualiseEffectArea(ea);
+                    }
+
+                    foreach (var go in Visuals[ea])
+                    {
+                        go.SetActive(VisualsOn);
+                    }
+                }
+
+            }
         }
 
         /// <summary>
@@ -60,6 +89,127 @@ namespace SafetyStatus
             }
         }
 
+                internal void VisualiseEffectArea(EffectArea area)
+        {
+            float radius = area.GetRadius();
+            Vector3 centre = area.transform.position;
+
+            int ringCount = 20; // Number of concentric rings
+            int segments = 60;  // Points around each ring
+
+            List<Vector3> vertices = new();
+            List<int> triangles = new();
+            List<Vector2> uvs = new();
+
+            // Add centre vertex
+            Vector3 centrePos = GetTerrainPoint(centre);
+            vertices.Add(centrePos);
+            uvs.Add(Vector2.zero);
+
+            for (int r = 1; r <= ringCount; r++)
+            {
+                float currentRadius = (radius * r) / ringCount;
+                for (int s = 0; s < segments; s++)
+                {
+                    float angle = (s / (float)segments) * Mathf.PI * 2;
+                    Vector3 offset = new Vector3(Mathf.Cos(angle), 0, Mathf.Sin(angle)) * currentRadius;
+                    Vector3 worldPos = centre + offset;
+
+                    vertices.Add(GetTerrainPoint(worldPos));
+                    uvs.Add(new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)));
+                }
+            }
+
+            // Triangles
+            for (int r = 0; r < ringCount - 1; r++)
+            {
+                int start = 1 + r * segments;
+                int next = start + segments;
+
+                for (int s = 0; s < segments; s++)
+                {
+                    int curr = start + s;
+                    int nextSeg = start + (s + 1) % segments;
+                    int currNextRing = next + s;
+                    int nextNextRing = next + (s + 1) % segments;
+
+                    if (r == 0)
+                    {
+                        // Fan from centre
+                        triangles.Add(0);
+                        triangles.Add(nextSeg);
+                        triangles.Add(curr);
+                    }
+
+                    // Quads between rings (split into two triangles)
+                    triangles.Add(currNextRing);
+                    triangles.Add(curr);
+                    triangles.Add(nextSeg);
+
+                    triangles.Add(nextNextRing);
+                    triangles.Add(currNextRing);
+                    triangles.Add(nextSeg);
+                }
+            }
+
+            GenerateMesh(vertices, triangles, uvs, area);
+        }
+
+        Vector3 GetTerrainPoint(Vector3 pos)
+        {
+            if (Physics.Raycast(pos + Vector3.up * 100f, Vector3.down, out RaycastHit hit, 200f, LayerMask.GetMask("terrain")))
+                return hit.point + Vector3.up * 0.25f;
+
+            return pos;
+        }
+
+        internal void GenerateMesh(List<Vector3> verts, List<int> tris, List<Vector2> uvs, EffectArea area)
+        {
+            Mesh mesh = new Mesh
+            {
+                vertices = verts.ToArray(),
+                triangles = tris.ToArray(),
+                uv = uvs.ToArray()
+            };
+            mesh.RecalculateNormals();
+
+            GameObject tile = new GameObject("SafetyStatus_TerrainMesh");
+            tile.transform.SetParent(transform);
+            MeshFilter mf = tile.AddComponent<MeshFilter>();
+            mf.mesh = mesh;
+            MeshRenderer mr = tile.AddComponent<MeshRenderer>();
+            mr.material = new Material(Shader.Find("Diffuse")) { color = Color.green };
+
+            Visuals[area].Add(tile);
+
+        }
+
+        /// <summary>
+        ///     Clear effectArea list and visuals when switching worlds
+        /// </summary>
+
+        [HarmonyPatch(typeof(ZoneSystem), nameof(ZoneSystem.Start))]
+        internal class ZoneSystemStartPatch
+        {
+            [HarmonyPostfix]
+            private static void ZoneSystemStartPostfix()
+            {
+
+                foreach (var effectArea in Visuals)
+                {
+                    foreach (var tile in effectArea.Value)
+                    {
+                        if (tile != null)
+                            GameObject.Destroy(tile);
+                    }
+                }
+
+                Visuals.Clear();
+
+                VisualsOn = false;
+            }
+        }
+
         [HarmonyPatch(typeof(EffectArea))]
         internal static class EffectAreaPatch
         {
@@ -75,9 +225,36 @@ namespace SafetyStatus
                 {
                     __instance.m_statusEffect = SafeEffectName;
                     __instance.m_statusEffectHash = SafeEffectHash;
+                    
+                    if (!Visuals.ContainsKey(__instance))
+                    {
+                        Visuals[__instance] = new List<GameObject>();
+
+                        if (Player.m_localPlayer != null && VisualsOn == true)
+                        {
+                            SafetyStatus.Instance?.VisualiseEffectArea(__instance);
+                        }
+                    }
                 }
             }
 
+            [HarmonyPostfix]
+            [HarmonyPatch(nameof(EffectArea.OnDestroy))]
+            private static void OnDestroyPostfix(EffectArea __instance)
+            {
+                if (__instance.m_type == EffectArea.Type.PlayerBase)
+                {
+                    if (Visuals.ContainsKey(__instance))
+                    {
+                        foreach (var tile in Visuals[__instance])
+                        {
+                            GameObject.Destroy(tile);
+                        }
+                        Visuals.Remove(__instance);
+                    }
+                }
+            }
+            
             /// <summary>
             ///     SafetyStatus is also applied to non player creatures so when they die it tries to update 
             ///     the status effect for them since they didn't leave, but they are not there any more.
@@ -116,8 +293,8 @@ namespace SafetyStatus
             /// <param name="__instance"></param>
             [HarmonyPostfix]
             [HarmonyPriority(Priority.Low)]
-            [HarmonyPatch(nameof(Piece.Awake))]
-            private static void AwakePostfix(Piece __instance)
+            [HarmonyPatch(nameof(Piece.OnPlaced))]
+            private static void OnPlacedPostfix(Piece __instance)
             {
                 if (!__instance)
                 {
@@ -125,6 +302,7 @@ namespace SafetyStatus
                 }
 
                 AddSafeEffect(__instance.gameObject);
+                AddVisual(__instance.gameObject);
             }
 
             /// <summary>
@@ -158,6 +336,23 @@ namespace SafetyStatus
                     {
                         effectArea.m_statusEffect = SafeEffectName;
                         effectArea.m_statusEffectHash = SafeEffectHash;
+                    }
+                }
+            }
+
+            private static void AddVisual(GameObject gameObject)
+            {
+                if (!gameObject) { return; }
+
+                foreach (var effectArea in gameObject.GetComponentsInChildren<EffectArea>())
+                {
+                    if (effectArea.m_type == EffectArea.Type.PlayerBase && Player.m_localPlayer != null)
+                    {
+                        if (!Visuals.ContainsKey(effectArea))
+                        {
+                            Visuals[effectArea] = new List<GameObject>();
+                        }
+
                     }
                 }
             }
