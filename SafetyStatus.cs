@@ -1,4 +1,4 @@
-﻿// Ignore Spelling: SafetyStatus Jotunn
+// Ignore Spelling: SafetyStatus Jotunn
 using BepInEx;
 using BepInEx.Logging;
 using HarmonyLib;
@@ -29,10 +29,14 @@ namespace SafetyStatus
         internal static Dictionary<EffectArea, List<GameObject>> Visuals = new();
         internal static bool VisualsOn = false;
 
+        static readonly List<Vector3> vertices = new();
+        static readonly List<int> triangles = new();
+        static readonly List<Vector2> uvs = new();
+
         public void Awake()
         {
             Instance = this;
-            
+
             Log.Init(Logger);
 
             Harmony.CreateAndPatchAll(Assembly.GetExecutingAssembly(), harmonyInstanceId: PluginGUID);
@@ -89,34 +93,34 @@ namespace SafetyStatus
             }
         }
 
-                internal void VisualiseEffectArea(EffectArea area)
+        /// <summary>
+        ///     Generate the intial visual vertices
+        /// </summary>
+        void GenerateShape()
         {
-            float radius = area.GetRadius();
-            Vector3 centre = area.transform.position;
+            if (vertices.Count > 0) return;
 
-            int ringCount = 20; // Number of concentric rings
-            int segments = 60;  // Points around each ring
+            int ringCount = 20;
+            int segments = 60;
 
-            List<Vector3> vertices = new();
-            List<int> triangles = new();
-            List<Vector2> uvs = new();
+            vertices.Clear();
+            triangles.Clear();
+            uvs.Clear();
 
             // Add centre vertex
-            Vector3 centrePos = GetTerrainPoint(centre);
-            vertices.Add(centrePos);
+            vertices.Add(Vector3.zero);
             uvs.Add(Vector2.zero);
 
             for (int r = 1; r <= ringCount; r++)
             {
-                float currentRadius = (radius * r) / ringCount;
+                float currentRadius = r / (float)ringCount;
                 for (int s = 0; s < segments; s++)
                 {
-                    float angle = (s / (float)segments) * Mathf.PI * 2;
-                    Vector3 offset = new Vector3(Mathf.Cos(angle), 0, Mathf.Sin(angle)) * currentRadius;
-                    Vector3 worldPos = centre + offset;
-
-                    vertices.Add(GetTerrainPoint(worldPos));
-                    uvs.Add(new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)));
+                    float angle = (s / (float)segments) * Mathf.PI * 2f;
+                    float x = Mathf.Cos(angle) * currentRadius;
+                    float z = Mathf.Sin(angle) * currentRadius;
+                    vertices.Add(new Vector3(x, 0f, z));
+                    uvs.Add(new Vector2(x, z));
                 }
             }
 
@@ -151,16 +155,28 @@ namespace SafetyStatus
                     triangles.Add(nextSeg);
                 }
             }
-
-            GenerateMesh(vertices, triangles, uvs, area);
         }
 
-        Vector3 GetTerrainPoint(Vector3 pos)
+        /// <summary>
+        ///     Apply the generated shape to each PlayerBase EffectArea
+        /// </summary>
+        internal void VisualiseEffectArea(EffectArea area)
         {
-            if (Physics.Raycast(pos + Vector3.up * 100f, Vector3.down, out RaycastHit hit, 200f, LayerMask.GetMask("terrain")))
-                return hit.point + Vector3.up * 0.25f;
+            GenerateShape();
 
-            return pos;
+            float radius = area.GetRadius();
+            Vector3 centre = area.transform.position;
+
+            List<Vector3> verts = new(vertices.Count);
+            for (int i = 0; i < vertices.Count; i++)
+            {
+                Vector3 offset = vertices[i] * radius;
+                Vector3 pos = centre + offset;
+                float terrainY = ZoneSystem.instance.GetGroundHeight(pos);
+                verts.Add(new Vector3(pos.x, terrainY + 0.25f, pos.z));
+            }
+
+            GenerateMesh(verts, triangles, uvs, area);
         }
 
         internal void GenerateMesh(List<Vector3> verts, List<int> tris, List<Vector2> uvs, EffectArea area)
@@ -225,7 +241,7 @@ namespace SafetyStatus
                 {
                     __instance.m_statusEffect = SafeEffectName;
                     __instance.m_statusEffectHash = SafeEffectHash;
-                    
+
                     if (!Visuals.ContainsKey(__instance))
                     {
                         Visuals[__instance] = new List<GameObject>();
@@ -254,7 +270,7 @@ namespace SafetyStatus
                     }
                 }
             }
-            
+
             /// <summary>
             ///     SafetyStatus is also applied to non player creatures so when they die it tries to update 
             ///     the status effect for them since they didn't leave, but they are not there any more.
