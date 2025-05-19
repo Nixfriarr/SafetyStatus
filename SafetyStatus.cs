@@ -1,6 +1,7 @@
 // Ignore Spelling: SafetyStatus Jotunn
 using BepInEx;
 using BepInEx.Logging;
+using BepInEx.Configuration;
 using HarmonyLib;
 using Jotunn.Entities;
 using Jotunn.Managers;
@@ -21,6 +22,10 @@ namespace SafetyStatus
         public const string PluginGUID = $"{Author}.Valheim.{PluginName}";
         public const string PluginVersion = "1.2.2";
 
+        private ConfigEntry<string> tileColor;
+        private ConfigEntry<int> tileAlpha;
+        private ConfigEntry<KeyboardShortcut> keyBind;
+
         internal static CustomStatusEffect SafeEffect;
         internal const string SafeEffectName = "SafeStatusEffect";
         internal static int SafeEffectHash;
@@ -39,6 +44,10 @@ namespace SafetyStatus
 
             Log.Init(Logger);
 
+            tileColor = Config.Bind("Appearance", "TileColor", "Green", "Set the color of the terrain mesh (color name or hex)");
+            tileAlpha = Config.Bind("Appearance", "TileAlpha", 50, new ConfigDescription("Set the transparency of the terrain mesh (0 = transparent, 100 = opaque).", new AcceptableValueRange<int>(0, 100)));
+            keyBind = Config.Bind("Keybind", "ToggleVisuals", new KeyboardShortcut(KeyCode.F7), "Keybind to toggle the visibility of the visual effect areas.");
+
             Harmony.CreateAndPatchAll(Assembly.GetExecutingAssembly(), harmonyInstanceId: PluginGUID);
 
             Game.isModded = true;
@@ -48,7 +57,7 @@ namespace SafetyStatus
 
         public void Update()
         {
-            if (Input.GetKeyDown(KeyCode.F7))
+            if (keyBind.Value.IsDown())
             {
                 VisualsOn = !VisualsOn;
 
@@ -194,7 +203,23 @@ namespace SafetyStatus
             MeshFilter mf = tile.AddComponent<MeshFilter>();
             mf.mesh = mesh;
             MeshRenderer mr = tile.AddComponent<MeshRenderer>();
-            mr.material = new Material(Shader.Find("Diffuse")) { color = Color.green };
+
+            string colorInput = tileColor.Value.ToLower();
+            Color parsedColor = Color.green; // Default fallback
+
+            var colorProperty = typeof(Color).GetProperty(colorInput, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static); //interpret color from config
+            if (colorProperty != null)
+            {
+                parsedColor = (Color)colorProperty.GetValue(null);
+            }
+            else if (ColorUtility.TryParseHtmlString(colorInput.StartsWith("#") ? colorInput : "#" + colorInput, out Color hexColor))
+            {
+                parsedColor = hexColor;
+            }
+
+            mr.material = new Material(Resources.FindObjectsOfTypeAll<Shader>().First(s => s.name == "UI/Unlit/Transparent")) { 
+                color = new Color(parsedColor.r, parsedColor.g, parsedColor.b, Mathf.Clamp(tileAlpha.Value / 100f, 0f, 1f)) 
+            };
 
             Visuals[area].Add(tile);
 
